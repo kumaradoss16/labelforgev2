@@ -1,8 +1,9 @@
 /**
- * Deterministic Vector & SVG Barcode Rendering Subsystem
- * Independent implementations of industrial 1D & 2D barcode patterns.
+ * Production-Grade Vector & SVG Barcode Rendering Subsystem
+ * Powered by BWIP-JS with defense-in-depth XSS sanitization and verified standards compliance.
  */
 
+import bwipjs from 'bwip-js';
 import QRCode from 'qrcode';
 
 export interface BarcodeRenderResult {
@@ -11,358 +12,243 @@ export interface BarcodeRenderResult {
   width: number;
   height: number;
   displayText?: string;
+  isError?: boolean;
+  errorMessage?: string;
 }
 
 // ----------------------------------------------------
-// CODE 128 SUBSET B / C ENCODER WITH MOD-103 CHECKSUM
+// DEFENSE-IN-DEPTH XSS SANITIZATION & XML ESCAPING
 // ----------------------------------------------------
 
-const CODE128_PATTERNS: string[] = [
-  '212222', '222122', '222221', '121223', '121322', '131222', '122213', '122312', '132212', '221213', // 0-9
-  '221312', '231212', '112232', '122132', '122231', '113222', '123122', '123221', '223211', '221132', // 10-19
-  '221231', '213212', '223112', '312131', '311222', '321122', '321221', '312212', '322112', '322211', // 20-29
-  '212123', '212321', '232121', '111323', '131123', '131321', '112313', '132113', '132311', '211313', // 30-39
-  '231113', '231311', '112133', '112331', '132131', '113123', '113321', '133121', '313121', '211331', // 40-49
-  '231131', '213113', '213311', '213131', '311123', '311321', '331121', '312113', '312311', '332111', // 50-59
-  '314111', '221411', '431111', '111224', '111422', '121124', '121421', '141122', '141221', '112214', // 60-69
-  '112412', '122114', '122411', '142112', '142211', '241211', '221114', '413111', '241112', '134111', // 70-79
-  '111242', '121142', '121241', '114212', '124112', '124211', '411212', '421112', '421211', '212141', // 80-89
-  '214121', '412121', '111143', '111341', '131141', '114113', '114311', '411113', '411311', '113141', // 90-99
-  '114131', '311141', '411131', '211412', '211214', '211232', '2331112', // 100-106 (106 is STOP pattern)
-];
+/**
+ * Escapes characters that have syntactic significance in XML/SVG.
+ * Defends against script injection, breakout tags, and attribute poisoning.
+ */
+export function escapeXml(unsafe: string | null | undefined): string {
+  if (unsafe == null) return '';
+  return String(unsafe)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
 
-const CODE128_START_B = 104;
-const CODE128_START_C = 105;
-const CODE128_STOP = 106;
-
-export function encodeCode128(text: string): { modules: number[]; displayText: string } {
-  const safeText = text || 'LF-128';
-  const isPureNumericEven = /^\d+$/.test(safeText) && safeText.length % 2 === 0;
-
-  const codes: number[] = [];
-  if (isPureNumericEven && safeText.length >= 4) {
-    // Mode C
-    codes.push(CODE128_START_C);
-    for (let i = 0; i < safeText.length; i += 2) {
-      codes.push(parseInt(safeText.substring(i, i + 2), 10));
-    }
-  } else {
-    // Mode B
-    codes.push(CODE128_START_B);
-    for (let i = 0; i < safeText.length; i++) {
-      const code = safeText.charCodeAt(i) - 32;
-      codes.push(code >= 0 && code <= 95 ? code : 0);
-    }
-  }
-
-  // Calculate Mod-103 checksum
-  let sum = codes[0];
-  for (let i = 1; i < codes.length; i++) {
-    sum += codes[i] * i;
-  }
-  const checksum = sum % 103;
-  codes.push(checksum);
-  codes.push(CODE128_STOP);
-
-  // Convert codes to binary module array (1 = bar, 0 = space)
-  const modules: number[] = [];
-  // Quiet zone: 10 modules
-  for (let q = 0; q < 10; q++) modules.push(0);
-
-  codes.forEach((c) => {
-    const pattern = CODE128_PATTERNS[c] || CODE128_PATTERNS[0];
-    let isBar = true;
-    for (let i = 0; i < pattern.length; i++) {
-      const width = parseInt(pattern[i], 10);
-      for (let w = 0; w < width; w++) {
-        modules.push(isBar ? 1 : 0);
-      }
-      isBar = !isBar;
-    }
-  });
-
-  // Trailing quiet zone: 10 modules
-  for (let q = 0; q < 10; q++) modules.push(0);
-
-  return { modules, displayText: safeText };
+/**
+ * Sanitizes arbitrary SVG markup by stripping executable script elements,
+ * interactive frame elements, and all inline event handlers.
+ */
+export function sanitizeSvg(svgContent: string): string {
+  if (!svgContent) return '';
+  return svgContent
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<foreignObject\b[^<]*(?:(?!<\/foreignObject>)<[^<]*)*<\/foreignObject>/gi, '')
+    .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+    .replace(/\bon\w+\s*=\s*(["'][^"']*["']|[^\s>]+)/gi, '')
+    .replace(/href\s*=\s*["']\s*javascript:[^"']*["']/gi, 'href=""');
 }
 
 // ----------------------------------------------------
-// CODE 39 ENCODER
+// SYMBOLOGY MAPPER & NORMALIZER
 // ----------------------------------------------------
 
-const CODE39_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-. $/+%*';
-const CODE39_ENCODINGS: Record<string, string> = {
-  '0': 'bwbwbwBwb', '1': 'BwbwbwBwb', '2': 'bwBwbwBwb', '3': 'BwBwbwbwb',
-  '4': 'bwbwBwBwb', '5': 'BwbwBwbwb', '6': 'bwBwBwbwb', '7': 'bwbwbwBwB',
-  '8': 'BwbwbwBwB', '9': 'bwBwbwBwB', 'A': 'BwbwbwbwB', 'B': 'bwBwbwbwB',
-  'C': 'BwBwbwbwb', 'D': 'bwbwBwbwB', 'E': 'BwbwBwbwb', 'F': 'bwBwBwbwb',
-  'G': 'bwbwbwBwB', 'H': 'BwbwbwBwb', 'I': 'bwBwbwBwb', 'J': 'bwbwBwBwb',
-  'K': 'BwbwbwbwB', 'L': 'bwBwbwbwB', 'M': 'BwBwbwbwB', 'N': 'bwbwBwbwB',
-  'O': 'BwbwBwbwB', 'P': 'bwBwBwbwB', 'Q': 'bwbwbwBwB', 'R': 'BwbwbwBwB',
-  'S': 'bwBwbwBwB', 'T': 'bwbwBwBwB', 'U': 'BwbwbwbwB', 'V': 'bwBwbwbwB',
-  'W': 'BwBwbwbwB', 'X': 'bwbwBwbwB', 'Y': 'BwbwBwbwB', 'Z': 'bwBwBwbwB',
-  '-': 'bwbwbwBwb', '.': 'BwbwbwBwb', ' ': 'bwBwbwBwb', '$': 'bwbwBwbwb',
-  '/': 'bwbwbwBwb', '+': 'bwbwbwBwb', '%': 'bwbwbwbwB', '*': 'bwbwBwBwb',
+interface SymbologySpec {
+  bcid: string;
+  is2D: boolean;
+  defaultText: string;
+  preprocess?: (data: string) => { text: string; error?: string };
+}
+
+const SYMBOLOGY_MAP: Record<string, SymbologySpec> = {
+  // 1D Linear
+  code128: { bcid: 'code128', is2D: false, defaultText: 'LF-88429-A' },
+  'gs1-128': { bcid: 'code128', is2D: false, defaultText: '(01)10843210000045(17)281231(10)LOT26A' },
+  isbt128: { bcid: 'code128', is2D: false, defaultText: '=W000022123456' },
+  code39: {
+    bcid: 'code39',
+    is2D: false,
+    defaultText: 'PART-9042',
+    preprocess: (d) => ({ text: (d || 'PART-9042').toUpperCase().replace(/[^0-9A-Z\-.$ /+%]/g, '-') }),
+  },
+  code39full: { bcid: 'code39ext', is2D: false, defaultText: 'Item*#402' },
+  code93: { bcid: 'code93', is2D: false, defaultText: 'CODE93-DATA' },
+  code93i: { bcid: 'code93ext', is2D: false, defaultText: '93I-88210' },
+  codabar: {
+    bcid: 'rationalizedCodabar',
+    is2D: false,
+    defaultText: 'A12345678B',
+    preprocess: (d) => {
+      let clean = (d || '12345678').toUpperCase().replace(/[^0-9\-$:/.+ABCD]/g, '');
+      if (!clean) clean = '12345678';
+      const first = clean[0];
+      const last = clean[clean.length - 1];
+      const hasStart = ['A', 'B', 'C', 'D'].includes(first);
+      const hasStop = ['A', 'B', 'C', 'D'].includes(last);
+      if (!hasStart && !hasStop) clean = `A${clean}B`;
+      else if (!hasStart) clean = `A${clean}`;
+      else if (!hasStop) clean = `${clean}B`;
+      return { text: clean };
+    },
+  },
+  // Retail & Packaging (Genuine Dedicated Encoders)
+  ean13: {
+    bcid: 'ean13',
+    is2D: false,
+    defaultText: '4006381333931',
+    preprocess: (d) => {
+      let digits = (d || '400638133393').replace(/\D/g, '').slice(0, 13);
+      if (digits.length < 12) digits = digits.padEnd(12, '0');
+      return { text: digits.slice(0, 13) };
+    },
+  },
+  jan13: {
+    bcid: 'ean13',
+    is2D: false,
+    defaultText: '4901234567894',
+    preprocess: (d) => {
+      let digits = (d || '490123456789').replace(/\D/g, '').slice(0, 13);
+      if (digits.length < 12) digits = digits.padEnd(12, '0');
+      return { text: digits.slice(0, 13) };
+    },
+  },
+  ean8: {
+    bcid: 'ean8',
+    is2D: false,
+    defaultText: '96385074',
+    preprocess: (d) => {
+      let digits = (d || '9638507').replace(/\D/g, '').slice(0, 8);
+      if (digits.length < 7) digits = digits.padEnd(7, '0');
+      return { text: digits.slice(0, 8) };
+    },
+  },
+  jan8: {
+    bcid: 'ean8',
+    is2D: false,
+    defaultText: '49123456',
+    preprocess: (d) => {
+      let digits = (d || '4912345').replace(/\D/g, '').slice(0, 8);
+      if (digits.length < 7) digits = digits.padEnd(7, '0');
+      return { text: digits.slice(0, 8) };
+    },
+  },
+  upca: {
+    bcid: 'upca',
+    is2D: false,
+    defaultText: '012345678905',
+    preprocess: (d) => {
+      let digits = (d || '01234567890').replace(/\D/g, '').slice(0, 12);
+      if (digits.length < 11) digits = digits.padEnd(11, '0');
+      return { text: digits.slice(0, 12) };
+    },
+  },
+  upce: {
+    bcid: 'upce',
+    is2D: false,
+    defaultText: '01234565',
+    preprocess: (d) => {
+      let digits = (d || '0123456').replace(/\D/g, '').slice(0, 8);
+      if (digits.length < 6) digits = digits.padEnd(6, '0');
+      return { text: digits.slice(0, 8) };
+    },
+  },
+  isbn13: { bcid: 'isbn', is2D: false, defaultText: '978-3-16-148410-0' },
+  itf14: {
+    bcid: 'itf14',
+    is2D: false,
+    defaultText: '10012345678902',
+    preprocess: (d) => {
+      let digits = (d || '1001234567890').replace(/\D/g, '').slice(0, 14);
+      if (digits.length < 13) digits = digits.padEnd(13, '0');
+      return { text: digits.slice(0, 14) };
+    },
+  },
+  dun14: {
+    bcid: 'itf14',
+    is2D: false,
+    defaultText: '10012345678902',
+    preprocess: (d) => {
+      let digits = (d || '1001234567890').replace(/\D/g, '').slice(0, 14);
+      if (digits.length < 13) digits = digits.padEnd(13, '0');
+      return { text: digits.slice(0, 14) };
+    },
+  },
+  interleaved2of5: {
+    bcid: 'interleaved2of5',
+    is2D: false,
+    defaultText: '1234567890',
+    preprocess: (d) => {
+      let digits = (d || '12345678').replace(/\D/g, '');
+      if (digits.length % 2 !== 0) digits = '0' + digits;
+      return { text: digits || '00' };
+    },
+  },
+  standard2of5: { bcid: 'code2of5', is2D: false, defaultText: '12345678' },
+  industrial2of5: { bcid: 'code2of5', is2D: false, defaultText: '12345678' },
+  sscc18: { bcid: 'sscc18', is2D: false, defaultText: '(00)008432100000000427' },
+
+  // 2D Matrix (Authentic ECC 200 / Reed-Solomon)
+  datamatrix: { bcid: 'datamatrix', is2D: true, defaultText: 'LF-DM-2026' },
+  'gs1-datamatrix': { bcid: 'gs1datamatrix', is2D: true, defaultText: '(01)00843210000045(21)SER109284' },
+  pdf417: { bcid: 'pdf417', is2D: true, defaultText: 'PDF417-HIGH-DENSITY-CARGO-MANIFEST-2026' },
+  micropdf417: { bcid: 'micropdf417', is2D: true, defaultText: 'MICRO-PDF-CARGO-128' },
+  aztec: { bcid: 'azteccode', is2D: true, defaultText: 'AZTEC-BOARDING-PASS-DATA' },
+  azteccode: { bcid: 'azteccode', is2D: true, defaultText: 'AZTEC-BOARDING-PASS-DATA' },
+  maxicode: { bcid: 'maxicode', is2D: true, defaultText: '[)>01961234567890128400011Z00004951UPSN06X61015912345671/11.0Y1234' },
+  qrcode: { bcid: 'qrcode', is2D: true, defaultText: 'https://labelforge.industrial' },
+  microqrcode: { bcid: 'microqrcode', is2D: true, defaultText: 'U12345' },
+  'gs1-qrcode': { bcid: 'gs1qrcode', is2D: true, defaultText: 'https://id.gs1.org/01/09520123456788/21/SER9876' },
+
+  // Postal 4-State & Logistics
+  'usps-imb': {
+    bcid: 'onecode',
+    is2D: false,
+    defaultText: '01234567094987654321-01234',
+    preprocess: (d) => ({ text: (d || '01234567094987654321-01234').replace(/[^0-9\-]/g, '') }),
+  },
+  'usps-onecode': {
+    bcid: 'onecode',
+    is2D: false,
+    defaultText: '01234567094987654321-01234',
+    preprocess: (d) => ({ text: (d || '01234567094987654321-01234').replace(/[^0-9\-]/g, '') }),
+  },
+  postnet: {
+    bcid: 'postnet',
+    is2D: false,
+    defaultText: '90210',
+    preprocess: (d) => ({ text: (d || '90210').replace(/\D/g, '') }),
+  },
+  planet: {
+    bcid: 'planet',
+    is2D: false,
+    defaultText: '40123456789',
+    preprocess: (d) => ({ text: (d || '40123456789').replace(/\D/g, '') }),
+  },
+  royalmail: { bcid: 'royalmail', is2D: false, defaultText: 'SN34RD1A' },
+  'royalmail-mailmark': { bcid: 'mailmark', is2D: false, defaultText: '421000000000001SN34RD1A' },
+  auspost: { bcid: 'auspost', is2D: false, defaultText: '1112345678' },
+  japanpost: { bcid: 'japanpost', is2D: false, defaultText: '10000011-2-3' },
+  kix: { bcid: 'kix', is2D: false, defaultText: '1234AB1A' },
+
+  // Specialized Industrial Symbologies
+  msi: { bcid: 'msi', is2D: false, defaultText: '1234567' },
+  code11: { bcid: 'code11', is2D: false, defaultText: '1234-5678' },
+  telepen: { bcid: 'telepen', is2D: false, defaultText: 'TELEPEN123' },
+  plessey: { bcid: 'plessey', is2D: false, defaultText: '1234567' },
+  pharmacode: {
+    bcid: 'pharmacode',
+    is2D: false,
+    defaultText: '12345',
+    preprocess: (d) => {
+      const val = parseInt((d || '12345').replace(/\D/g, ''), 10);
+      const bounded = isNaN(val) || val < 3 ? 12345 : Math.min(val, 131070);
+      return { text: String(bounded) };
+    },
+  },
+  posicode: { bcid: 'posicode', is2D: false, defaultText: '12345' },
+  codablockf: { bcid: 'codablockf', is2D: true, defaultText: 'CODABLOCK-F-PAYLOAD' },
+  code16k: { bcid: 'code16k', is2D: true, defaultText: 'CODE16K-PAYLOAD' },
+  code49: { bcid: 'code49', is2D: true, defaultText: 'CODE49-PAYLOAD' },
 };
-
-export function encodeCode39(text: string): { modules: number[]; displayText: string } {
-  const upper = (text || 'CODE39').toUpperCase().replace(/[^0-9A-Z\-.$ /+%]/g, '-');
-  const fullString = `*${upper}*`;
-  const modules: number[] = [];
-
-  for (let q = 0; q < 10; q++) modules.push(0); // quiet zone
-
-  for (let c = 0; c < fullString.length; c++) {
-    const char = fullString[c];
-    const pat = CODE39_ENCODINGS[char] || CODE39_ENCODINGS['-'];
-    for (let p = 0; p < pat.length; p++) {
-      const isBar = p % 2 === 0;
-      const isWide = pat[p] === 'B' || pat[p] === 'W';
-      const width = isWide ? 3 : 1;
-      for (let w = 0; w < width; w++) {
-        modules.push(isBar ? 1 : 0);
-      }
-    }
-    // Inter-character space
-    modules.push(0);
-  }
-
-  for (let q = 0; q < 10; q++) modules.push(0); // quiet zone
-  return { modules, displayText: upper };
-}
-
-// ----------------------------------------------------
-// EAN-13 & UPC-A ENCODER WITH CHECKSUM
-// ----------------------------------------------------
-
-const EAN_L = [
-  '0001101', '0011001', '0010011', '0111101', '0100011',
-  '0110001', '0101111', '0111011', '0110111', '0001011',
-];
-const EAN_G = [
-  '0100111', '0110011', '0011011', '0100001', '0011101',
-  '0111001', '0000101', '0010001', '0001001', '0010111',
-];
-const EAN_R = [
-  '1110010', '1100110', '1101100', '1000010', '1011100',
-  '1001110', '1010000', '1000100', '1001000', '1110100',
-];
-const EAN_STRUCTURE = [
-  'LLLLLL', 'LLGLGG', 'LLGGLG', 'LLGGGL', 'LGLLGG',
-  'LGGLLG', 'LGGGLL', 'LGLGLG', 'LGLGGL', 'LGGLGL',
-];
-
-export function calculateEanChecksum(digits12: string): number {
-  let sum = 0;
-  for (let i = 0; i < 12; i++) {
-    const d = parseInt(digits12[i] || '0', 10);
-    sum += i % 2 === 0 ? d : d * 3;
-  }
-  const mod = sum % 10;
-  return mod === 0 ? 0 : 10 - mod;
-}
-
-export function encodeEan13(digits: string): { modules: number[]; displayText: string } {
-  let clean = digits.replace(/\D/g, '').slice(0, 13);
-  if (clean.length < 12) {
-    clean = clean.padEnd(12, '0');
-  }
-  if (clean.length === 12) {
-    clean += calculateEanChecksum(clean);
-  }
-
-  const firstDigit = parseInt(clean[0], 10);
-  const leftDigits = clean.slice(1, 7);
-  const rightDigits = clean.slice(7, 13);
-  const patternType = EAN_STRUCTURE[firstDigit] || EAN_STRUCTURE[0];
-
-  const modules: number[] = [];
-  for (let q = 0; q < 7; q++) modules.push(0); // Quiet zone
-
-  // Start guard: 101
-  modules.push(1, 0, 1);
-
-  // Left 6 digits
-  for (let i = 0; i < 6; i++) {
-    const d = parseInt(leftDigits[i], 10);
-    const code = patternType[i] === 'L' ? EAN_L[d] : EAN_G[d];
-    for (let b = 0; b < code.length; b++) {
-      modules.push(code[b] === '1' ? 1 : 0);
-    }
-  }
-
-  // Center guard: 01010
-  modules.push(0, 1, 0, 1, 0);
-
-  // Right 6 digits (always R parity)
-  for (let i = 0; i < 6; i++) {
-    const d = parseInt(rightDigits[i], 10);
-    const code = EAN_R[d];
-    for (let b = 0; b < code.length; b++) {
-      modules.push(code[b] === '1' ? 1 : 0);
-    }
-  }
-
-  // End guard: 101
-  modules.push(1, 0, 1);
-  for (let q = 0; q < 7; q++) modules.push(0); // Quiet zone
-
-  return { modules, displayText: `${clean[0]} ${leftDigits} ${rightDigits}` };
-}
-
-// ----------------------------------------------------
-// INTERLEAVED 2 OF 5 & ITF-14
-// ----------------------------------------------------
-
-const ITF_PATTERNS: string[] = [
-  'NNWWN', 'WNNNW', 'NWNNW', 'WWNNN', 'NNWNW',
-  'WNWNN', 'NWWNN', 'NNNWW', 'WNNWN', 'NWNWN',
-];
-
-export function encodeItf(digits: string): { modules: number[]; displayText: string } {
-  let clean = digits.replace(/\D/g, '');
-  if (clean.length % 2 !== 0) {
-    clean = '0' + clean; // Even number of digits required
-  }
-  if (!clean) clean = '00';
-
-  const modules: number[] = [];
-  for (let q = 0; q < 10; q++) modules.push(0);
-
-  // Start pattern: narrow bar, narrow space, narrow bar, narrow space (1010)
-  modules.push(1, 0, 1, 0);
-
-  for (let i = 0; i < clean.length; i += 2) {
-    const barDigit = parseInt(clean[i], 10);
-    const spaceDigit = parseInt(clean[i + 1], 10);
-    const barPat = ITF_PATTERNS[barDigit];
-    const spacePat = ITF_PATTERNS[spaceDigit];
-
-    for (let e = 0; e < 5; e++) {
-      const barWidth = barPat[e] === 'W' ? 3 : 1;
-      for (let w = 0; w < barWidth; w++) modules.push(1);
-
-      const spaceWidth = spacePat[e] === 'W' ? 3 : 1;
-      for (let w = 0; w < spaceWidth; w++) modules.push(0);
-    }
-  }
-
-  // Stop pattern: wide bar, narrow space, narrow bar (11101)
-  modules.push(1, 1, 1, 0, 1);
-  for (let q = 0; q < 10; q++) modules.push(0);
-
-  return { modules, displayText: clean };
-}
-
-// ----------------------------------------------------
-// POSTAL 4-STATE (USPS / ROYAL MAIL / AUSPOST)
-// ----------------------------------------------------
-
-export function render4StatePostalSvg(
-  data: string,
-  width: number,
-  height: number,
-  color: string
-): BarcodeRenderResult {
-  const clean = data.toUpperCase().replace(/[^0-9A-Z]/g, '') || '0123456789';
-  const barCount = Math.max(30, clean.length * 4);
-  const barWidth = 1.2;
-  const gap = 1.8;
-  const totalWidth = barCount * (barWidth + gap);
-  const trackHeight = height * 0.35;
-  const ascHeight = height * 0.65;
-  const descHeight = height * 0.65;
-
-  let rects = '';
-  for (let i = 0; i < barCount; i++) {
-    const x = i * (barWidth + gap);
-    // Determine 4-state height: 0=Tracker, 1=Ascender, 2=Descender, 3=Full
-    const state = (clean.charCodeAt(i % clean.length) + i) % 4;
-    let y = 0;
-    let h = height;
-
-    if (state === 0) {
-      // Tracker
-      y = (height - trackHeight) / 2;
-      h = trackHeight;
-    } else if (state === 1) {
-      // Ascender
-      y = 0;
-      h = ascHeight;
-    } else if (state === 2) {
-      // Descender
-      y = height - descHeight;
-      h = descHeight;
-    } else {
-      // Full
-      y = 0;
-      h = height;
-    }
-
-    rects += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth}" height="${h.toFixed(1)}" fill="${color}" />`;
-  }
-
-  return {
-    svgContent: rects,
-    viewBox: `0 0 ${totalWidth.toFixed(1)} ${height}`,
-    width: totalWidth,
-    height,
-    displayText: clean,
-  };
-}
-
-// ----------------------------------------------------
-// DATA MATRIX ECC200 DETERMINISTIC GENERATOR
-// ----------------------------------------------------
-
-export function renderDataMatrixSvg(
-  data: string,
-  sizeMm: number,
-  color: string
-): BarcodeRenderResult {
-  const clean = data || 'LF-DM-2026';
-  const size = 18; // 18x18 matrix
-  const moduleSize = 10;
-  const totalPx = size * moduleSize;
-
-  let rects = '';
-
-  // Solid L-finder pattern (left and bottom)
-  for (let r = 0; r < size; r++) {
-    rects += `<rect x="0" y="${r * moduleSize}" width="${moduleSize}" height="${moduleSize}" fill="${color}" />`;
-  }
-  for (let c = 0; c < size; c++) {
-    rects += `<rect x="${c * moduleSize}" y="${(size - 1) * moduleSize}" width="${moduleSize}" height="${moduleSize}" fill="${color}" />`;
-  }
-
-  // Alternating timing pattern (top and right)
-  for (let c = 0; c < size; c += 2) {
-    rects += `<rect x="${c * moduleSize}" y="0" width="${moduleSize}" height="${moduleSize}" fill="${color}" />`;
-  }
-  for (let r = 1; r < size; r += 2) {
-    rects += `<rect x="${(size - 1) * moduleSize}" y="${r * moduleSize}" width="${moduleSize}" height="${moduleSize}" fill="${color}" />`;
-  }
-
-  // Data payload region pseudo-random deterministic fill based on data bytes
-  for (let r = 1; r < size - 1; r++) {
-    for (let c = 1; c < size - 1; c++) {
-      const charCode = clean.charCodeAt((r * size + c) % clean.length);
-      const isSet = (charCode * 7 + r * 13 + c * 17) % 3 === 0;
-      if (isSet) {
-        rects += `<rect x="${c * moduleSize}" y="${r * moduleSize}" width="${moduleSize}" height="${moduleSize}" fill="${color}" />`;
-      }
-    }
-  }
-
-  return {
-    svgContent: rects,
-    viewBox: `0 0 ${totalPx} ${totalPx}`,
-    width: totalPx,
-    height: totalPx,
-    displayText: clean,
-  };
-}
 
 // ----------------------------------------------------
 // MASTER BARCODE SVG BUILDER
@@ -380,85 +266,124 @@ export async function renderBarcodeSvg(
     textPosition?: 'bottom' | 'top' | 'none';
     fontSize?: number;
     errorCorrection?: 'L' | 'M' | 'Q' | 'H';
+    includeCheckDigit?: boolean;
   } = {}
 ): Promise<BarcodeRenderResult> {
   const color = options.color || '#000000';
   const showText = options.showText ?? true;
-  const symbId = (symbologyId || 'code128').toLowerCase();
+  const symbKey = (symbologyId || 'code128').toLowerCase();
 
-  // QR Code
-  if (symbId === 'qrcode' || symbId === 'gs1-qrcode' || symbId === 'microqrcode') {
+  // 1. High-Performance Standard QR Code Fallback via qrcode library
+  if (symbKey === 'qrcode' || symbKey === 'qr') {
     try {
-      const qrDataUrl = await QRCode.toDataURL(data || 'LF-QR', {
+      const qrDataUrl = await QRCode.toDataURL(data || 'https://labelforge.industrial', {
         errorCorrectionLevel: options.errorCorrection || 'M',
         margin: 1,
         color: {
           dark: color,
-          light: '#00000000', // transparent bg
+          light: '#00000000',
         },
       });
+      const escapedDataUrl = escapeXml(qrDataUrl);
+      const safeContent = `<image href="${escapedDataUrl}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />`;
       return {
-        svgContent: `<image href="${qrDataUrl}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" />`,
+        svgContent: sanitizeSvg(safeContent),
         viewBox: '0 0 100 100',
         width: 100,
         height: 100,
-        displayText: data,
+        displayText: escapeXml(data),
       };
     } catch {
-      return renderDataMatrixSvg(data, widthMm, color);
+      // Fall through to BWIP-JS QR generator
     }
   }
 
-  // Data Matrix
-  if (symbId === 'datamatrix' || symbId === 'gs1-datamatrix') {
-    return renderDataMatrixSvg(data, widthMm, color);
-  }
-
-  // Postal 4-State
-  if (
-    symbId.includes('post') ||
-    symbId.includes('usps') ||
-    symbId.includes('royalmail') ||
-    symbId.includes('kix') ||
-    symbId.includes('cepnet')
-  ) {
-    return render4StatePostalSvg(data, 120, 30, color);
-  }
-
-  // 1D Linear Encoders
-  let encoded: { modules: number[]; displayText: string };
-
-  if (symbId.startsWith('code39')) {
-    encoded = encodeCode39(data);
-  } else if (symbId.startsWith('ean') || symbId.startsWith('jan') || symbId.startsWith('isbn') || symbId === 'upca' || symbId === 'upce') {
-    encoded = encodeEan13(data);
-  } else if (symbId.startsWith('itf') || symbId.includes('2of5') || symbId === 'dun14') {
-    encoded = encodeItf(data);
-  } else {
-    // Default to Code 128 (covers GS1-128, Code 128, Codabar fallback, etc.)
-    encoded = encodeCode128(data);
-  }
-
-  const { modules, displayText } = encoded;
-  const totalModules = modules.length;
-  const barHeight = showText ? 80 : 100;
-
-  let rects = '';
-  for (let i = 0; i < totalModules; i++) {
-    if (modules[i] === 1) {
-      rects += `<rect x="${i}" y="0" width="1" height="${barHeight}" fill="${color}" />`;
-    }
-  }
-
-  if (showText && displayText) {
-    rects += `<text x="${totalModules / 2}" y="95" text-anchor="middle" font-family="'JetBrains Mono', monospace" font-size="12" font-weight="600" fill="${color}">${displayText}</text>`;
-  }
-
-  return {
-    svgContent: rects,
-    viewBox: `0 0 ${totalModules} 100`,
-    width: totalModules,
-    height: 100,
-    displayText,
+  // 2. Resolve Symbology Configuration
+  const spec = SYMBOLOGY_MAP[symbKey] || {
+    bcid: 'code128',
+    is2D: false,
+    defaultText: data || 'LF-128',
   };
+
+  let cleanData = data || spec.defaultText;
+  if (spec.preprocess) {
+    const res = spec.preprocess(cleanData);
+    cleanData = res.text;
+  }
+
+  // 3. Render via BWIP-JS Engine with Authentic Standards
+  try {
+    const bwipOptions: Parameters<typeof bwipjs.toSVG>[0] = {
+      bcid: spec.bcid,
+      text: cleanData,
+      scale: 2,
+      includetext: showText && !spec.is2D,
+      textxalign: 'center',
+      barcolor: color.replace('#', ''),
+      textcolor: color.replace('#', ''),
+    };
+
+    if (options.includeCheckDigit) {
+      bwipOptions.includecheck = true;
+      bwipOptions.includecheckintext = true;
+    }
+
+    const rawSvg = bwipjs.toSVG(bwipOptions);
+
+    // Extract viewBox and inner SVG elements
+    const viewBoxMatch = rawSvg.match(/viewBox="([^"]+)"/);
+    const viewBox = viewBoxMatch ? viewBoxMatch[1] : '0 0 100 100';
+
+    // Strip outer <svg...> and </svg> tags
+    const innerContent = rawSvg.replace(/<svg[^>]*>/, '').replace(/<\/svg>/, '');
+
+    // Recoloring if color hex is specified
+    let processedContent = innerContent;
+    if (color && color !== '#000000') {
+      processedContent = processedContent
+        .replace(/stroke="#000000"/g, `stroke="${escapeXml(color)}"`)
+        .replace(/fill="#000000"/g, `fill="${escapeXml(color)}"`);
+    }
+
+    // Apply security sanitization
+    const sanitized = sanitizeSvg(processedContent);
+
+    // Parse viewBox dimensions for aspect ratio handling
+    const parts = viewBox.split(/\s+/).map((n: string) => parseFloat(n) || 100);
+    const w = parts[2] || 100;
+    const h = parts[3] || 100;
+
+    return {
+      svgContent: sanitized,
+      viewBox,
+      width: w,
+      height: h,
+      displayText: cleanData,
+    };
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.warn(`[LabelForge] BWIP render error for ${symbologyId}:`, errorMsg);
+
+    // Defensive fallback: Render an informative, safe, vector error indicator
+    const safeMsg = escapeXml(errorMsg.replace(/bwipp\.\w+:\s*/, ''));
+    const safeTitle = escapeXml(symbKey.toUpperCase());
+    const safeData = escapeXml(cleanData);
+
+    const fallbackSvg = `
+      <rect x="1" y="1" width="198" height="78" fill="#18181b" stroke="#ef4444" stroke-width="1.5" rx="3" />
+      <text x="10" y="24" fill="#ef4444" font-family="'JetBrains Mono', monospace" font-size="11" font-weight="bold">INVALID ${safeTitle}</text>
+      <text x="10" y="44" fill="#a1a1aa" font-family="'JetBrains Mono', monospace" font-size="9">${safeMsg || 'Data does not match symbology charset'}</text>
+      <text x="10" y="64" fill="#e4e4e7" font-family="'JetBrains Mono', monospace" font-size="10">"${safeData}"</text>
+    `;
+
+    return {
+      svgContent: sanitizeSvg(fallbackSvg),
+      viewBox: '0 0 200 80',
+      width: 200,
+      height: 80,
+      displayText: cleanData,
+      isError: true,
+      errorMessage: safeMsg,
+    };
+  }
 }

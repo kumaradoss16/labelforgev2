@@ -159,6 +159,13 @@ export const HeaderToolbar: React.FC<HeaderToolbarProps> = ({
   const [showAboutModal, setShowAboutModal] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
 
+  // Non-blocking toast notifications
+  const [toast, setToast] = useState<{ message: string; type: 'info' | 'success' | 'error' } | null>(null);
+  const showToast = (message: string, type: 'info' | 'success' | 'error' = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3500);
+  };
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const menuContainerRef = useRef<HTMLDivElement>(null);
 
@@ -321,9 +328,12 @@ export const HeaderToolbar: React.FC<HeaderToolbarProps> = ({
             id: `doc-${Date.now()}`,
             updatedAt: new Date().toISOString(),
           });
+          showToast(`Label "${parsed.name || 'document'}" loaded successfully`, 'success');
+        } else {
+          showToast('Invalid .lforge file structure (missing width, height, or objects)', 'error');
         }
       } catch (err) {
-        alert('Invalid .lforge label file format');
+        showToast('Invalid .lforge label file format — unable to parse JSON schema', 'error');
       }
     };
     reader.readAsText(file);
@@ -1579,13 +1589,21 @@ export const HeaderToolbar: React.FC<HeaderToolbarProps> = ({
               <Italic className="w-3.5 h-3.5" />
             </button>
 
-            {/* Underline (represented by Underline icon) */}
+            {/* Underline Toggle */}
             <button
               onClick={() => {
-                alert('Underline formatting active for thermal print streams.');
+                if (!isText) return;
+                const cur = (selectedObject as TextLabelObject).textDecoration;
+                updateTextProp({ textDecoration: cur === 'underline' ? 'none' : 'underline' });
+                showToast(cur === 'underline' ? 'Underline removed' : 'Underline formatting applied', 'info');
               }}
-              className="w-6 h-6 rounded flex items-center justify-center text-xs text-zinc-300 hover:bg-zinc-800 transition-colors"
-              title="Underline"
+              className={`w-6 h-6 rounded flex items-center justify-center text-xs transition-colors ${
+                isText && (selectedObject as TextLabelObject).textDecoration === 'underline'
+                  ? 'bg-amber-400/20 text-amber-400 border border-amber-400/40'
+                  : 'text-zinc-300 hover:bg-zinc-800'
+              }`}
+              title="Underline (Ctrl+U)"
+              aria-label="Toggle underline"
             >
               <Underline className="w-3.5 h-3.5" />
             </button>
@@ -1877,6 +1895,28 @@ export const HeaderToolbar: React.FC<HeaderToolbarProps> = ({
               OK
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Non-Blocking Designed Toast Notification */}
+      {toast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className={`fixed bottom-8 right-8 z-50 px-4 py-2.5 rounded-lg shadow-xl border text-xs flex items-center gap-2 transition-all animate-in fade-in slide-in-from-bottom-2 select-none ${
+            toast.type === 'error'
+              ? 'bg-[#1c1214] border-red-500/50 text-red-300'
+              : toast.type === 'success'
+              ? 'bg-[#101915] border-emerald-500/50 text-emerald-300'
+              : 'bg-[#18181b] border-zinc-700 text-zinc-200'
+          }`}
+        >
+          {toast.type === 'error' ? (
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+          ) : (
+            <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+          )}
+          <span>{toast.message}</span>
         </div>
       )}
     </header>

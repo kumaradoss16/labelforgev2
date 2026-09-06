@@ -16,7 +16,7 @@ import {
   snapToGrid,
   SCREEN_PX_PER_MM,
 } from '../lib/units';
-import { renderBarcodeSvg, BarcodeRenderResult } from '../lib/barcodeRenderer';
+import { renderBarcodeSvg, BarcodeRenderResult, sanitizeSvg } from '../lib/barcodeRenderer';
 import { interpolateVariables, formatCounterString } from '../lib/serialization';
 
 interface CanvasProps {
@@ -600,8 +600,9 @@ export const Canvas: React.FC<CanvasProps> = ({
                 const wPx = mmToScreenPixels(obj.width, zoom);
                 const hPx = mmToScreenPixels(obj.height, zoom);
 
+                const objPayload = 'data' in obj ? ((obj as { data?: string }).data || '') : ('text' in obj ? ((obj as { text?: string }).text || '') : '');
                 const cacheKey = `${obj.id}-${obj.type}-${
-                  liveDataPreview ? interpolateVariables(obj.data || '', document.variables) : obj.data
+                  liveDataPreview ? interpolateVariables(objPayload, document.variables) : objPayload
                 }-${obj.width}-${obj.height}`;
 
                 const barcodeResult = barcodeSvgCache[cacheKey];
@@ -633,6 +634,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                           fontSize: `${obj.fontSize * (zoom * 1.33)}px`,
                           fontWeight: obj.fontWeight || 'normal',
                           fontStyle: obj.fontStyle || 'normal',
+                          textDecoration: obj.textDecoration || 'none',
                           color: obj.color || '#000000',
                           justifyContent:
                             obj.textAlign === 'center'
@@ -654,7 +656,7 @@ export const Canvas: React.FC<CanvasProps> = ({
                             viewBox={barcodeResult.viewBox}
                             className="w-full h-full"
                             preserveAspectRatio="none"
-                            dangerouslySetInnerHTML={{ __html: barcodeResult.svgContent }}
+                            dangerouslySetInnerHTML={{ __html: sanitizeSvg(barcodeResult.svgContent) }}
                           />
                         ) : (
                           <div className="w-full h-full bg-zinc-100 flex items-center justify-center text-[9px] font-mono text-zinc-500 border border-zinc-200">

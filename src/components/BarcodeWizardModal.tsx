@@ -7,7 +7,7 @@ import React, { useState, useEffect } from 'react';
 import { Search, X, Check, Barcode, ShieldAlert, Sparkles } from 'lucide-react';
 import { BarcodeSymbologyDefinition, SymbologyCategory } from '../types';
 import { BARCODE_SYMBOLOGIES } from '../lib/barcodeCatalog';
-import { renderBarcodeSvg, BarcodeRenderResult } from '../lib/barcodeRenderer';
+import { renderBarcodeSvg, BarcodeRenderResult, sanitizeSvg } from '../lib/barcodeRenderer';
 
 interface BarcodeWizardModalProps {
   isOpen: boolean;
@@ -212,7 +212,7 @@ export const BarcodeWizardModal: React.FC<BarcodeWizardModalProps> = ({
                     viewBox={previewResult.viewBox}
                     className="w-full max-h-24"
                     preserveAspectRatio="xMidYMid meet"
-                    dangerouslySetInnerHTML={{ __html: previewResult.svgContent }}
+                    dangerouslySetInnerHTML={{ __html: sanitizeSvg(previewResult.svgContent) }}
                   />
                 ) : (
                   <div className="text-zinc-500 text-xs font-mono">Generating vector preview...</div>

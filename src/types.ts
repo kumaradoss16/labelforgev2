@@ -76,6 +76,7 @@ export interface TextLabelObject extends BaseLabelObject {
   fontFamily: string;
   fontWeight: 'normal' | 'bold' | '500' | '600' | '700';
   fontStyle: 'normal' | 'italic';
+  textDecoration?: 'none' | 'underline' | 'line-through';
   textAlign: 'left' | 'center' | 'right';
   color: string;
   variableBinding?: string;

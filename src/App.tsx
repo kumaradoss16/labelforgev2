@@ -22,6 +22,7 @@ import { PrintDialogModal } from './components/PrintDialogModal';
 import { PrintStationView } from './components/PrintStationView';
 import { PrinterManagerModal } from './components/PrinterManagerModal';
 import { PreflightModal } from './components/PreflightModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { runPreflight } from './lib/preflight';
 
 const INITIAL_PRINTERS: PrinterProfile[] = [
@@ -172,11 +173,16 @@ export default function App() {
     setSelectedObjectId(duplicated.id);
   };
 
-  const handleDeleteObject = (id: string) => {
-    const newObjects = doc.objects.filter((o) => o.id !== id);
-    updateDocumentWithHistory({ ...doc, objects: newObjects }, true);
-    if (selectedObjectId === id) setSelectedObjectId(null);
-  };
+  const handleDeleteObject = useCallback((id: string) => {
+    setDoc((currentDoc) => {
+      const newObjects = currentDoc.objects.filter((o) => o.id !== id);
+      const updated = { ...currentDoc, objects: newObjects };
+      setHistory((prev) => [...prev.slice(0, historyIndex + 1), updated]);
+      setHistoryIndex((prev) => prev + 1);
+      return updated;
+    });
+    setSelectedObjectId((prev) => (prev === id ? null : prev));
+  }, [historyIndex]);
 
   // Quick Insert from Toolbar
   const handleQuickInsert = (type: LabelObjectType) => {
@@ -334,18 +340,29 @@ export default function App() {
     setSelectedObjectId(newObj.id);
   };
 
-  // Keyboard Shortcuts
+  // Consolidated Keyboard Navigation (Nudge, Delete, Deselect, Undo, Redo, Duplicate, Print)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      const target = e.target as HTMLElement | null;
+      const activeTag = (target?.tagName || '').toLowerCase();
+      if (activeTag === 'input' || activeTag === 'textarea' || activeTag === 'select' || target?.isContentEditable) {
         return;
       }
 
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+      if (e.key === 'Escape') {
+        setSelectedObjectId(null);
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (selectedObjectId) {
+          e.preventDefault();
+          handleDeleteObject(selectedObjectId);
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
-        if (e.shiftKey) handleRedo();
-        else handleUndo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        handleUndo();
+      } else if (
+        ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
+        ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z')
+      ) {
         e.preventDefault();
         handleRedo();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p') {
@@ -355,17 +372,30 @@ export default function App() {
         e.preventDefault();
         const cur = doc.objects.find((o) => o.id === selectedObjectId);
         if (cur) handleDuplicateObject(cur);
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (selectedObjectId) {
-          e.preventDefault();
-          handleDeleteObject(selectedObjectId);
-        }
+      } else if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+        if (!selectedObjectId) return;
+        const sel = doc.objects.find((o) => o.id === selectedObjectId);
+        if (!sel || sel.locked) return;
+        e.preventDefault();
+        const step = e.shiftKey ? 5 : 1;
+        let deltaX = 0;
+        let deltaY = 0;
+        if (e.key === 'ArrowLeft') deltaX = -step;
+        if (e.key === 'ArrowRight') deltaX = step;
+        if (e.key === 'ArrowUp') deltaY = -step;
+        if (e.key === 'ArrowDown') deltaY = step;
+
+        handleUpdateObject({
+          ...sel,
+          x: Math.round((sel.x + deltaX) * 10) / 10,
+          y: Math.round((sel.y + deltaY) * 10) / 10,
+        });
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedObjectId, doc.objects, handleUndo, handleRedo]);
+  }, [selectedObjectId, doc.objects, handleUndo, handleRedo, handleDeleteObject]);
 
   const handlePrintCompleted = (
     copies: number,
@@ -386,9 +416,10 @@ export default function App() {
   };
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#121214] text-zinc-100 overflow-hidden font-sans select-none">
-      {/* 1. Header Toolbar */}
-      <HeaderToolbar
+    <ErrorBoundary fallbackTitle="LabelForge Enterprise Crash Recovery">
+      <div className="flex flex-col h-screen w-screen bg-[#121214] text-zinc-100 overflow-hidden font-sans select-none">
+        {/* 1. Header Toolbar */}
+        <HeaderToolbar
         activeView={activeView}
         setActiveView={setActiveView}
         document={doc}
@@ -540,15 +571,16 @@ export default function App() {
         onSelectPrinter={setSelectedPrinterId}
       />
 
-      <PreflightModal
-        isOpen={isPreflightOpen}
-        onClose={() => setIsPreflightOpen(false)}
-        result={preflightResult}
-        onSelectObject={(id) => {
-          setSelectedObjectId(id);
-          setActiveView('designer');
-        }}
-      />
-    </div>
+        <PreflightModal
+          isOpen={isPreflightOpen}
+          onClose={() => setIsPreflightOpen(false)}
+          result={preflightResult}
+          onSelectObject={(id) => {
+            setSelectedObjectId(id);
+            setActiveView('designer');
+          }}
+        />
+      </div>
+    </ErrorBoundary>
   );
 }
