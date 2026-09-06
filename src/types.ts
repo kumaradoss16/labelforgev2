@@ -116,6 +116,20 @@ export interface DataMatrixLabelObject extends BaseLabelObject {
   backgroundColor: string;
 }
 
+export type EditorTool =
+  | 'select'
+  | 'rectangle'
+  | 'circle'
+  | 'line'
+  | 'text'
+  | 'barcode'
+  | 'qrcode'
+  | 'datamatrix'
+  | 'shape'
+  | 'counter'
+  | 'datetime'
+  | 'image';
+
 export interface ShapeLabelObject extends BaseLabelObject {
   type: 'shape';
   shapeType: LabelShapeType;
@@ -123,6 +137,10 @@ export interface ShapeLabelObject extends BaseLabelObject {
   strokeWidth: number; // in mm
   fillColor: string;
   cornerRadius: number; // for rounded rectangles in mm
+  lineStyle?: 'solid' | 'dashed' | 'dotted';
+  opacity?: number;
+  arrowStart?: boolean;
+  arrowEnd?: boolean;
 }
 
 export interface CounterLabelObject extends BaseLabelObject {
@@ -178,6 +196,7 @@ export interface LabelMargins {
 export interface LabelDocument {
   id: string;
   name: string;
+  category?: string;
   description?: string;
   version: string;
   width: number; // in mm
